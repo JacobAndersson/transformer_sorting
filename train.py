@@ -110,6 +110,7 @@ def main(
     var_length: bool = False,
     pth: str = 'model.pkl',
     num_epochs: int = 3,
+    device: str = 'cpu',
     ):
     cfg = HookedTransformerConfig(
         d_model=128,
@@ -120,7 +121,7 @@ def main(
         d_vocab=max_value + 3,
         act_fn='relu',
         attn_only=True,
-        device='cpu',
+        device=device,
         seed=42,
         normalization_type=None
     )
@@ -140,6 +141,8 @@ def main(
         train_seed=42,
         var_length=var_length,
     )
+    print(cfg)
+    print(train_cfg)
 
     if not var_length:
         data = generate_batches(train_cfg, 'train')
@@ -196,6 +199,7 @@ def main(
 
     for epoch in range(num_epochs):
         for i, batch in enumerate(data):
+            batch = batch.to(device)
             out = model(batch)
 
             if (var_length):
@@ -209,6 +213,7 @@ def main(
             if i % 50 == 0:
                 total_test_loss = 0.0
                 for test_batch in test_data:
+                    test_batch = test_batch.to(device)
                     out = model(test_batch)
                     loss = loss_fn(out, test_batch, list_length)
                     total_test_loss += loss.item()
