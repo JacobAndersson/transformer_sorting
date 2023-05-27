@@ -72,7 +72,6 @@ def generate_var_length_batches(cfg, dataset):
 
     torch.manual_seed(seed)
 
-    #random_list = torch.randint(cfg.min_value, cfg.max_value, (samples, cfg.list_length)).tolist()
     num_batches = samples // cfg.batch_size
 
     batches = []
@@ -83,7 +82,7 @@ def generate_var_length_batches(cfg, dataset):
             random_list = torch.randint(cfg.min_value, cfg.max_value, (1, length)).tolist()[0]
             entry = [cfg.bos_token] + random_list + [cfg.mid_token] + sorted(random_list)
             batch.append(entry)
-        batches.append(torch.tensor(batch))
+        batches.append(torch.tensor(batch, device=cfg.device))
 
     return batches
 
@@ -206,15 +205,15 @@ def main(
             t0 = time.time()
             out = model(batch)
 
-            if (var_length):
-                list_length = batch.shape[1] // 2 - 1 
+            if var_length:
+                list_length = batch.shape[1] // 2 - 1
 
             loss = loss_fn(out, batch, list_length)
             loss.backward()
             optim.step()
             optim.zero_grad()
             t1 = time.time()
-            if (i % 100 == 0):
+            if i % 100 == 0:
                 print(f'Epoch {epoch}, batch {i}, loss {loss.item()}, time {t1-t0}')
                 if use_wandb:
                     wandb.log({'loss': loss.item(), 'time': t1-t0, 'epoch': epoch, 'batch': i})
@@ -222,8 +221,9 @@ def main(
             if i % 1000 == 0:
                 total_test_loss = 0.0
                 for test_batch in test_data:
-                    #test_batch = test_batch.to(device)
                     out = model(test_batch)
+                    if var_length:
+                        list_length = test_batch.shape[1] // 2 - 1
                     loss = loss_fn(out, test_batch, list_length)
                     total_test_loss += loss.item()
 
@@ -237,15 +237,21 @@ def main(
                     wandb.log({'test_loss': total_test_loss / len(test_data), 'generation_acc': gen_acc, 'epoch': epoch})
                 scheduler.step(total_test_loss / len(test_data))
 
-    print('Saving model to', pth)
+        epoch_pth = pth.replace('.pkl', f'_epoch_{epoch}.pkl')
+        print('Saving model to', epoch_pth)
+        with open(epoch_pth, 'wb') as f:
+            pkl.dump({
+                "model": model.state_dict(),
+                "cfg": cfg,
+                "train_cfg": train_cfg,
+                }, f)
+
     with open(pth, 'wb') as f:
         pkl.dump({
             "model": model.state_dict(),
             "cfg": cfg,
             "train_cfg": train_cfg,
             }, f)
-
-    print(model)
 
 if __name__ == '__main__':
     fire.Fire(main)
