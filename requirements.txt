@@ -3,3 +3,4 @@ fire
 torch
 notebook
 circuitsvis
+wandb

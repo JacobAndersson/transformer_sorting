@@ -2,9 +2,11 @@ import torch
 import numpy as np
 from transformer_lens import HookedTransformer, HookedTransformerConfig
 from dataclasses import dataclass
+import time
 
 import pickle as pkl
 import fire
+import wandb
 
 @dataclass
 class TrainConfig:
@@ -18,6 +20,7 @@ class TrainConfig:
     test_seed: int = 62
     train_seed: int = 42
     var_length: bool = False
+    device: str = 'cpu'
 
 def calc_accuracy(batch):
     list_length = int(batch.shape[1] /2 - 1)
@@ -38,7 +41,7 @@ def generate_batches(cfg, dataset):
         samples = cfg.num_samples
     elif dataset == 'test':
         seed = cfg.test_seed
-        samples = cfg.num_samples
+        samples = cfg.num_samples//10
     else:
         seed = 42
         samples = 10000
@@ -51,6 +54,7 @@ def generate_batches(cfg, dataset):
         lists.append(entry)
 
     batches = torch.tensor(lists)
+    batches = batches.to(cfg.device)
 
     batches = torch.split(batches, cfg.batch_size)
     return batches
@@ -102,16 +106,18 @@ def predict(out, list_length):
     return probs.argmax(-1)
 
 def main(
-    list_length: int = 5,
-    num_samples: int = 10000,
-    batch_size: int = 100,
-    min_value: int = 0,
-    max_value: int = 64,
-    var_length: bool = False,
-    pth: str = 'model.pkl',
-    num_epochs: int = 3,
-    device: str = 'cpu',
-    ):
+        list_length: int = 5,
+        num_samples: int = 10000,
+        batch_size: int = 100,
+        min_value: int = 0,
+        max_value: int = 64,
+        var_length: bool = False,
+        pth: str = 'model.pkl',
+        num_epochs: int = 3,
+        device: str = 'cpu',
+        use_wandb: bool = False,
+        run_name: str = '',
+):
     cfg = HookedTransformerConfig(
         d_model=128,
         n_layers=1,
@@ -140,9 +146,18 @@ def main(
         test_seed=62,
         train_seed=42,
         var_length=var_length,
+        device=device
     )
     print(cfg)
     print(train_cfg)
+
+    if use_wandb:
+        merged_config = {**cfg.__dict__, **train_cfg.__dict__}
+        wandb.init(
+            project='mi-sorting-exp',
+            config=merged_config,
+            name=run_name
+            )
 
     if not var_length:
         data = generate_batches(train_cfg, 'train')
@@ -150,6 +165,8 @@ def main(
     else:
         data = generate_var_length_batches(train_cfg, 'train')
         test_data = generate_var_length_batches(train_cfg, 'test')
+
+    print('Data generated')
 
     model = HookedTransformer(cfg)
     optim = torch.optim.Adam(
@@ -161,19 +178,6 @@ def main(
         optim,
         mode='min',
     )
-
-    def viz(d):
-        list_length = d[0].shape[1] // 2 - 1
-
-        ex = d[0]
-        unsorted = ex[:, 1:list_length+1]
-        out = model(ex)
-        pred = predict(out, list_length)
-
-        for (i, (u, p)) in enumerate(zip(unsorted, pred)):
-            u = u.tolist()
-            p = p.tolist()
-            print(f'{i}: {u} -> {p}')
 
     def generation_acc(d):
         list_length = d[0].shape[1] // 2 - 1
@@ -199,7 +203,7 @@ def main(
 
     for epoch in range(num_epochs):
         for i, batch in enumerate(data):
-            batch = batch.to(device)
+            t0 = time.time()
             out = model(batch)
 
             if (var_length):
@@ -209,11 +213,16 @@ def main(
             loss.backward()
             optim.step()
             optim.zero_grad()
+            t1 = time.time()
+            if (i % 100 == 0):
+                print(f'Epoch {epoch}, batch {i}, loss {loss.item()}, time {t1-t0}')
+                if use_wandb:
+                    wandb.log({'loss': loss.item(), 'time': t1-t0, 'epoch': epoch, 'batch': i})
 
-            if i % 50 == 0:
+            if i % 1000 == 0:
                 total_test_loss = 0.0
                 for test_batch in test_data:
-                    test_batch = test_batch.to(device)
+                    #test_batch = test_batch.to(device)
                     out = model(test_batch)
                     loss = loss_fn(out, test_batch, list_length)
                     total_test_loss += loss.item()
@@ -224,9 +233,10 @@ def main(
                 print('test loss', total_test_loss / len(test_data))
                 print('generation acc', gen_acc)
                 print('####')
+                if use_wandb:
+                    wandb.log({'test_loss': total_test_loss / len(test_data), 'generation_acc': gen_acc, 'epoch': epoch})
                 scheduler.step(total_test_loss / len(test_data))
 
-    #viz(test_data)
     print('Saving model to', pth)
     with open(pth, 'wb') as f:
         pkl.dump({
