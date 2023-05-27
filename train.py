@@ -7,6 +7,7 @@ import time
 import pickle as pkl
 import fire
 import wandb
+import random
 
 @dataclass
 class TrainConfig:
@@ -17,10 +18,12 @@ class TrainConfig:
     max_value: int = 64
     bos_token: int = 65
     mid_token: int = 66
+    eos_token: int = 67
     test_seed: int = 62
     train_seed: int = 42
     var_length: bool = False
     device: str = 'cpu'
+    add_eos: bool = False
 
 def calc_accuracy(batch):
     list_length = int(batch.shape[1] /2 - 1)
@@ -51,6 +54,9 @@ def generate_batches(cfg, dataset):
     lists = []
     for entry in random_list:
         entry = [cfg.bos_token] + entry + [cfg.mid_token] + sorted(entry)
+        if cfg.add_eos:
+            entry += [cfg.eos_token]
+
         lists.append(entry)
 
     batches = torch.tensor(lists)
@@ -76,11 +82,14 @@ def generate_var_length_batches(cfg, dataset):
 
     batches = []
     for _ in range(num_batches):
-        length = torch.randint(1, cfg.list_length+1, (1,)).item()
+        length = random.randint(1, cfg.list_length+1)
         batch = []
         for _ in range(cfg.batch_size):
             random_list = torch.randint(cfg.min_value, cfg.max_value, (1, length)).tolist()[0]
             entry = [cfg.bos_token] + random_list + [cfg.mid_token] + sorted(random_list)
+            if cfg.add_eos:
+                entry += [cfg.eos_token]
+
             batch.append(entry)
         batches.append(torch.tensor(batch, device=cfg.device))
 
@@ -116,19 +125,23 @@ def main(
         device: str = 'cpu',
         use_wandb: bool = False,
         run_name: str = '',
+        add_eos: bool = False,
 ):
+    vocab_size = max_value + 4 if add_eos else max_value + 3
+    n_ctx = 2*list_length + 3 if add_eos else 2*list_length + 2
+
     cfg = HookedTransformerConfig(
         d_model=128,
         n_layers=1,
         n_heads=1,
         d_head=128,
-        n_ctx=2*list_length + 2,
-        d_vocab=max_value + 3,
+        n_ctx=n_ctx,
+        d_vocab=vocab_size,
         act_fn='relu',
         attn_only=True,
         device=device,
         seed=42,
-        normalization_type=None
+        normalization_type=None,
     )
 
     bos_token = max_value + 1
@@ -145,7 +158,8 @@ def main(
         test_seed=62,
         train_seed=42,
         var_length=var_length,
-        device=device
+        device=device,
+        add_eos=add_eos
     )
     print(cfg)
     print(train_cfg)
@@ -170,7 +184,7 @@ def main(
     model = HookedTransformer(cfg)
     optim = torch.optim.Adam(
         model.parameters(),
-        lr=1e-3,
+        lr=1e-4,
         betas=(.9, .999)
     )
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
@@ -192,7 +206,7 @@ def main(
                                       prepend_bos=False,
                                       verbose=False,
                                       )
-            acc, (correct, total)= calc_accuracy(predicted_sort)
+            acc, (correct, total) = calc_accuracy(predicted_sort)
             tot_correct += correct
             tot_el += total
         
